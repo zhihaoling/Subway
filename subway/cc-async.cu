@@ -21,7 +21,7 @@ int main(int argc, char** argv)
 	
 	Graph<OutEdge> graph(arguments.input, false);
 	graph.ReadGraph();
-	
+	 
 	float readtime = timer.Finish();
 	cout << "Graph Reading finished in " << readtime/1000 << " (s).\n";
 	
