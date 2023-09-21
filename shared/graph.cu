@@ -28,6 +28,18 @@ void Graph<OutEdge>::AssignW8(uint w8, uint index)
     edgeList[index].end = edgeList[index].end; // do nothing
 }
 
+//找到source的邻居集合,考虑是否可以用并行实现struct中提取end
+// template <class E>
+// uint* Graph<E>::N(uint source)
+// {
+//     uint* result;
+// 	memcpy(result,edgeList[source],outDegree[source]*sizeof(E));
+// 	for(int i=0;i<outDegree[source];i++){
+// 		result[i]=edgeList[nodePointer[source]+i].end;
+// 	}
+// 	return result;
+// }
+
 template <class E>
 void Graph<E>::ReadGraph()
 {
@@ -43,6 +55,7 @@ void Graph<E>::ReadGraph()
 		infile.read ((char*)&num_nodes, sizeof(uint));
 		infile.read ((char*)&num_edges, sizeof(uint));
 		
+		//这里把nodePointer初始化成n+1的大小了
 		nodePointer = new uint[num_nodes+1];
 		gpuErrorcheck(cudaMallocHost(&edgeList, (num_edges) * sizeof(E)));
 		
@@ -174,12 +187,16 @@ void Graph<E>::ReadGraph()
 		exit(-1);
 	}
 	
+
 	outDegree  = new unsigned int[num_nodes];
 	
-	for(uint i=1; i<num_nodes-1; i++)
+	//这里的出度计算有问题,而且cpu的nodePorinter本身就有n+1个
+	//原来-->for(uint i=1; i<num_nodes-1; i++)
+	for(uint i=1; i<num_nodes; i++)
 		outDegree[i-1] = nodePointer[i] - nodePointer[i-1];
 	outDegree[num_nodes-1] = num_edges - nodePointer[num_nodes-1];
 	
+
 	label1 = new bool[num_nodes];
 	label2 = new bool[num_nodes];
 	value  = new unsigned int[num_nodes];

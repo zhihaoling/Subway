@@ -17,6 +17,8 @@ public:
 	uint num_edges;
 	uint *nodePointer;
 	E *edgeList;
+
+	uint *srcOfList;
 	uint *outDegree;
 	bool *label1;
 	bool *label2;
@@ -30,6 +32,7 @@ public:
     string GetFileExtension(string fileName);
     void AssignW8(uint w8, uint index);
     void ReadGraph();
+	uint* N(uint source);
 };
 
 template <class E>

@@ -9,6 +9,46 @@
 #include "../shared/gpu_kernels.cuh"
 #include "../shared/subway_utilities.hpp"
 
+#include <cuda_runtime.h>
+
+//得到邻居
+uint* N(uint source,OutEdge* edgeList,uint* nodePointer,uint* outDegree)
+{
+    uint* result=new uint[outDegree[source]*sizeof(OutEdge)];
+	for(int i=0;i<outDegree[source];i++){
+		result[i]=edgeList[nodePointer[source]+i].end;
+	}
+	return result;
+}
+
+void printNeb(uint source,uint* array ,int size){
+    printf("%u的邻居：",source);
+    for(int i=0;i<size;i++){
+        printf("%u,",array[i]);
+    }
+    printf("\n");
+}
+__global__ void tc_sync_kernel(unsigned int numNodes,
+							unsigned int *d_nodesPointer,
+							OutEdge *d_edgeList,
+							unsigned int *d_outDegree)
+{
+    unsigned int tId = blockDim.x * blockIdx.x + threadIdx.x;
+	if(tId>=numNodes) return ;
+    uint source=tId;
+	printf("this is thread %u,and its outdegree size is %u\n",tId,d_outDegree[source]);
+    for(uint i=0;i<d_outDegree[source];i++){
+        //边终点
+        uint dest=d_edgeList[d_nodesPointer[source]+i].end;
+		//symmetry
+        if(source>dest) continue ;
+		//__syncthreads();
+		printf("src:%u dest:%u \n",source,dest);
+        //求两个点的邻居的交集
+        //printNeb<<<1,1>>>(source,N(source,d_edgeList,d_nodesPointer,d_outDegree),d_outDegree[source]);
+    }
+	return ;
+}
 
 int main(int argc, char** argv)
 {
@@ -21,22 +61,41 @@ int main(int argc, char** argv)
 	
 	Graph<OutEdge> graph(arguments.input, false);
 	graph.ReadGraph();
-	
+
 	float readtime = timer.Finish();
 	cout << "Graph Reading finished in " << readtime/1000 << " (s).\n";
 	
+	cout<<"graph.outDegree[0]="<<graph.outDegree[0]<<endl;
+
 	// OutEdge *edgeList;
 	// memcpy(edgeList,graph.edgeList,graph.num_edges*sizeof(OutEdge));
-	cout<<"edgeList:"<<endl;
-	for(int i=0;i<graph.num_edges;i++){
-		cout<<graph.edgeList[i].end<<" ";
-	}
-	cout<<endl<<"nodePointer:"<<endl;
-	for(int i=0;i<graph.num_nodes;i++){
-		cout<<graph.nodePointer[i]<<" ";
-	}
-	cout<<endl;
+	// cout<<"edgeList:"<<endl;
+	// for(int i=0;i<graph.num_edges;i++){
+	// 	cout<<graph.edgeList[i].end<<" ";
+	// }
+	// cout<<endl<<"nodePointer:"<<endl;
+	// for(int i=0;i<graph.num_nodes;i++){
+	// 	cout<<graph.nodePointer[i]<<" ";
+	// }
+	// cout<<endl;
+
+	uint* d_nodesPointer;
+	OutEdge* d_edgeList;
+	cudaMalloc(&d_nodesPointer,sizeof(uint)*(graph.num_nodes));
+	cudaMalloc(&d_edgeList,sizeof(OutEdge)*graph.num_edges);
+	cudaMemcpy(d_nodesPointer, graph.nodePointer,sizeof(uint)*(graph.num_nodes), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_edgeList, graph.edgeList, sizeof(OutEdge)*graph.num_edges, cudaMemcpyHostToDevice);
+
+	cudaMemcpy(graph.d_outDegree, graph.outDegree, sizeof(uint)*(graph.num_nodes), cudaMemcpyHostToDevice);
+
+	tc_sync_kernel<<<graph.num_nodes/512+1,512>>>(graph.num_nodes,d_nodesPointer,d_edgeList,graph.d_outDegree);
+	
+	cudaDeviceSynchronize();
+	
+	cout<<"cpu is finished"<<endl;
+
 	return 0;
+
 /*
 	for(unsigned int i=0; i<graph.num_nodes; i++)
 	{
