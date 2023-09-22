@@ -21,17 +21,43 @@ uint* N(uint source,OutEdge* edgeList,uint* nodePointer,uint* outDegree)
 	return result;
 }
 
-void printNeb(uint source,uint* array ,int size){
-    printf("%u的邻居：",source);
-    for(int i=0;i<size;i++){
-        printf("%u,",array[i]);
-    }
-    printf("\n");
+
+//并行地提取并存放end
+__global__ void getEdgesEnd(OutEdge *d_edgeList,uint* to,uint size){
+	unsigned int tId = blockDim.x * blockIdx.x + threadIdx.x;
+	if(tId>=size) return;
+	to[tId]=d_edgeList[tId].end;
+	__syncthreads();
+	if(tId==size-1){
+		printf("edgesEnd: ");
+		for(int i=0;i<size;i++) printf("%u ",to[i]);
+		printf("\n");
+	}
+	return ;
+}
+
+//hash表求交集个数，总node数为n，复杂度为O(n)
+__device__ uint set_intersaction(uint* set1,uint *set2,uint size1,uint size2,uint totalSize){
+	uint* hash=NULL;
+	uint result=0;
+	cudaError_t cudaState=cudaMalloc((void**)&hash,(totalSize+10)*sizeof(uint)) ;
+	if(cudaState!=cudaSuccess) printf("%s\n", cudaGetErrorString(cudaState));	
+	memset(hash,0,totalSize*sizeof(uint));
+	for(uint i=0;i<size1;i++) hash[set1[i]]+=1;
+	for(uint i=0;i<size2;i++){
+		hash[set2[i]]+=1;
+	} 
+	for(int i=0;i<totalSize;i++){
+		if(hash[i]==2) result++;
+	}
+	cudaFree(hash);
+	return result;
 }
 __global__ void tc_sync_kernel(unsigned int numNodes,
 							unsigned int *d_nodesPointer,
-							OutEdge *d_edgeList,
-							unsigned int *d_outDegree)
+							unsigned int *d_edgesEnd,
+							unsigned int *d_outDegree,
+							unsigned int *result)
 {
     unsigned int tId = blockDim.x * blockIdx.x + threadIdx.x;
 	if(tId>=numNodes) return ;
@@ -39,13 +65,29 @@ __global__ void tc_sync_kernel(unsigned int numNodes,
 	printf("this is thread %u,and its outdegree size is %u\n",tId,d_outDegree[source]);
     for(uint i=0;i<d_outDegree[source];i++){
         //边终点
-        uint dest=d_edgeList[d_nodesPointer[source]+i].end;
+        uint dest=d_edgesEnd[d_nodesPointer[source]+i];
 		//symmetry
         if(source>dest) continue ;
-		//__syncthreads();
-		printf("src:%u dest:%u \n",source,dest);
+		//printf("src:%u dest:%u \n",source,dest);
         //求两个点的邻居的交集
-        //printNeb<<<1,1>>>(source,N(source,d_edgeList,d_nodesPointer,d_outDegree),d_outDegree[source]);
+		uint* sourceNset;
+		uint* destNset;
+		cudaMalloc((void**)&sourceNset,sizeof(uint)*d_outDegree[source]);
+		cudaMalloc((void**)&destNset,sizeof(uint)*d_outDegree[dest]);
+		//这里基于d_edgesEnd的偏移量不需要*sizeof(uint)
+		memcpy(sourceNset,d_edgesEnd+d_nodesPointer[source],sizeof(uint)*d_outDegree[source]);
+		memcpy(destNset,d_edgesEnd+d_nodesPointer[dest],sizeof(uint)*d_outDegree[dest]);
+		uint thisAdd=set_intersaction(sourceNset,
+										destNset,
+										d_outDegree[source],
+										d_outDegree[dest],
+										numNodes);
+		printf("%u --> %u ,thisAdd=%u \n",source,dest,thisAdd);
+		//原子加法神中神
+		atomicAdd(result,thisAdd);
+		
+		cudaFree(sourceNset);
+		cudaFree(destNset);
     }
 	return ;
 }
@@ -64,35 +106,42 @@ int main(int argc, char** argv)
 
 	float readtime = timer.Finish();
 	cout << "Graph Reading finished in " << readtime/1000 << " (s).\n";
-	
-	cout<<"graph.outDegree[0]="<<graph.outDegree[0]<<endl;
-
-	// OutEdge *edgeList;
-	// memcpy(edgeList,graph.edgeList,graph.num_edges*sizeof(OutEdge));
-	// cout<<"edgeList:"<<endl;
-	// for(int i=0;i<graph.num_edges;i++){
-	// 	cout<<graph.edgeList[i].end<<" ";
-	// }
-	// cout<<endl<<"nodePointer:"<<endl;
-	// for(int i=0;i<graph.num_nodes;i++){
-	// 	cout<<graph.nodePointer[i]<<" ";
-	// }
-	// cout<<endl;
-
+	// cout<<"graph.outDegree[0]="<<graph.outDegree[0]<<endl;
+	uint* h_result=new uint;
 	uint* d_nodesPointer;
+	uint* d_edgesEnd;
 	OutEdge* d_edgeList;
+	uint* d_result;
 	cudaMalloc(&d_nodesPointer,sizeof(uint)*(graph.num_nodes));
 	cudaMalloc(&d_edgeList,sizeof(OutEdge)*graph.num_edges);
+	cudaMalloc(&d_edgesEnd,sizeof(uint)*graph.num_edges);
+	cudaMalloc(&d_result,sizeof(uint));
 	cudaMemcpy(d_nodesPointer, graph.nodePointer,sizeof(uint)*(graph.num_nodes), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_edgeList, graph.edgeList, sizeof(OutEdge)*graph.num_edges, cudaMemcpyHostToDevice);
-
 	cudaMemcpy(graph.d_outDegree, graph.outDegree, sizeof(uint)*(graph.num_nodes), cudaMemcpyHostToDevice);
+	*h_result=0;
+	cudaMemcpy(&d_result,h_result,sizeof(uint),cudaMemcpyHostToDevice);
 
-	tc_sync_kernel<<<graph.num_nodes/512+1,512>>>(graph.num_nodes,d_nodesPointer,d_edgeList,graph.d_outDegree);
-	
+
+	timer.Start();
+	getEdgesEnd<<<(graph.num_edges+512-1)/512,512>>>(d_edgeList,d_edgesEnd,graph.num_edges);
+	readtime = timer.Finish();
+	cout << " getEdgesEnd() finished in " << readtime/1000 << " (s).\n";
+
+	printf("nodePorinter: ");
+	for(int i=0;i<graph.num_nodes;i++) printf("%u ",graph.nodePointer[i]);
+	printf("\n");
+
+
+	tc_sync_kernel<<<graph.num_nodes/512+1,512>>>(graph.num_nodes,d_nodesPointer,d_edgesEnd,graph.d_outDegree,d_result);
 	cudaDeviceSynchronize();
+
 	
-	cout<<"cpu is finished"<<endl;
+	cudaMemcpy(h_result,d_result,sizeof(uint),cudaMemcpyDeviceToHost);
+	//消除重复计算的边
+	*h_result/=3;
+	
+	cout<<"The counting result : "<<*h_result<<endl;
 
 	return 0;
 
